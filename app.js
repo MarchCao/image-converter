@@ -143,6 +143,91 @@ function encodeBMPBuffer(imgData) {
   return u8;
 }
 
+/* ============ 图片合并 PDF(纯本地,手写最小 PDF 生成器,零依赖) ============
+   原理:PDF 可直接内嵌 JPEG 数据流(DCTDecode),无需压缩库或第三方组件。
+   每张图片一页:页面为 A4,方向跟随图片横竖,图片等比缩放居中放入页面。 */
+
+/* 纯函数:A4 页面布局。输入图片像素宽高,返回 {pageW,pageH,x,y,w,h}(单位 pt,
+   PDF 左下原点;居中布局,上/下量得的 y 相同) */
+function pdfPageLayout(imgW, imgH) {
+  var A4W = 595.28, A4H = 841.89, M = 36; /* A4 尺寸(pt)与页边距 */
+  imgW = Math.max(1, imgW | 0);
+  imgH = Math.max(1, imgH | 0);
+  var landscape = imgW > imgH;
+  var pageW = landscape ? A4H : A4W;
+  var pageH = landscape ? A4W : A4H;
+  var scale = Math.min((pageW - M * 2) / imgW, (pageH - M * 2) / imgH);
+  var w = imgW * scale, h = imgH * scale;
+  function r2(n) { return Math.round(n * 100) / 100; }
+  return {
+    pageW: r2(pageW), pageH: r2(pageH),
+    x: r2((pageW - w) / 2), y: r2((pageH - h) / 2), w: r2(w), h: r2(h)
+  };
+}
+
+/* 纯函数:由 JPEG 页数据组装 PDF Blob。
+   pages: [{data:Uint8Array(JPEG 字节), w, h(像素尺寸)}],至少 1 页 */
+function buildPdfBlob(pages) {
+  if (!pages || !pages.length) throw new Error('没有可写入 PDF 的图片');
+  var n = pages.length;
+  var objs = []; /* objs[i] = 对象 i+1 的内容(字符串或 {head, data}) */
+  objs[0] = '<< /Type /Catalog /Pages 2 0 R >>';
+  var kids = [];
+  for (var i = 0; i < n; i++) kids.push((3 + i * 3) + ' 0 R');
+  objs[1] = '<< /Type /Pages /Kids [' + kids.join(' ') + '] /Count ' + n + ' >>';
+  for (var p = 0; p < n; p++) {
+    var pg = pages[p];
+    var lay = pdfPageLayout(pg.w, pg.h);
+    var pageObj = 3 + p * 3, contentObj = pageObj + 1, imgObj = pageObj + 2;
+    objs[pageObj - 1] =
+      '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ' + lay.pageW + ' ' + lay.pageH + ']' +
+      ' /Resources << /XObject << /Im' + p + ' ' + imgObj + ' 0 R >> >>' +
+      ' /Contents ' + contentObj + ' 0 R >>';
+    var stream = 'q ' + lay.w + ' 0 0 ' + lay.h + ' ' + lay.x + ' ' + lay.y +
+      ' cm /Im' + p + ' Do Q';
+    objs[contentObj - 1] = { raw: stream }; /* 纯文本流,与图片流统一拼装 */
+    objs[imgObj - 1] = {
+      head: '<< /Type /XObject /Subtype /Image /Width ' + pg.w + ' /Height ' + pg.h +
+        ' /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ' +
+        pg.data.length + ' >>',
+      data: pg.data
+    };
+  }
+  /* 依次拼装并记录每个对象的字节偏移(文本均为 ASCII,长度即字节数) */
+  var parts = [], offset = 0, offsets = [0];
+  function pushStr(s) { parts.push(s); offset += s.length; }
+  function pushBytes(b) { parts.push(b); offset += b.length; }
+  pushStr('%PDF-1.4\n');
+  for (var o = 0; o < objs.length; o++) {
+    offsets[o + 1] = offset;
+    pushStr((o + 1) + ' 0 obj\n');
+    var body = objs[o];
+    if (typeof body === 'string') {
+      pushStr(body + '\n');
+    } else if (body.raw != null) {
+      pushStr('<< /Length ' + body.raw.length + ' >>\nstream\n');
+      pushStr(body.raw);
+      pushStr('\nendstream\n');
+    } else {
+      pushStr(body.head + '\nstream\n');
+      pushBytes(body.data);
+      pushStr('\nendstream\n');
+    }
+    pushStr('endobj\n');
+  }
+  var xrefPos = offset;
+  var total = objs.length + 1;
+  var xref = 'xref\n0 ' + total + '\n0000000000 65535 f \n';
+  for (var x = 1; x < total; x++) {
+    var off = String(offsets[x]);
+    while (off.length < 10) off = '0' + off;
+    xref += off + ' 00000 n \n';
+  }
+  pushStr(xref);
+  pushStr('trailer\n<< /Size ' + total + ' /Root 1 0 R >>\nstartxref\n' + xrefPos + '\n%%EOF');
+  return new Blob(parts, { type: 'application/pdf' });
+}
+
 /* ============ 状态(仅浏览器中使用) ============ */
 var items = [];          /* 转换任务列表 */
 var uidSeed = 0;
@@ -416,6 +501,64 @@ function downloadAllZip() {
   });
 }
 
+/* ============ 合并为 PDF(用列表原图按顺序生成,不依赖转换结果) ============ */
+var pdfBusy = false;
+function makePdf() {
+  if (pdfBusy) return;
+  if (!items.length) { toast('请先添加图片'); return; }
+  pdfBusy = true;
+  render();
+  var pages = [], skipped = 0;
+  var i = 0;
+  (function next() {
+    if (i >= items.length) {
+      pdfBusy = false;
+      if (pages.length) {
+        try {
+          downloadBlob(buildPdfBlob(pages), 'images.pdf');
+          toast(skipped ? ('PDF 已生成，共 ' + pages.length + ' 页（' + skipped + ' 张失败已跳过）')
+                        : ('PDF 已生成，共 ' + pages.length + ' 页'));
+        } catch (e) {
+          toast('PDF 生成失败：' + e.message);
+        }
+      } else {
+        toast('PDF 生成失败：没有可用的图片');
+      }
+      render();
+      return;
+    }
+    var it = items[i++];
+    $('btnPdf').textContent = '生成中 ' + i + '/' + items.length + '…';
+    loadImage(it, function (err, img) {
+      if (err) { skipped++; next(); return; }
+      /* 超大图等比缩小到 MAX_IMAGE_PIXELS(16MP)内,控制内存与 PDF 体积 */
+      var scale = Math.min(1, Math.sqrt(MAX_IMAGE_PIXELS / (it.imgW * it.imgH)));
+      var tw = Math.max(1, Math.round(it.imgW * scale));
+      var th = Math.max(1, Math.round(it.imgH * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = tw;
+      canvas.height = th;
+      var ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#ffffff'; /* JPEG 无透明通道,先铺白底 */
+      ctx.fillRect(0, 0, tw, th);
+      ctx.drawImage(img, 0, 0, tw, th);
+      try {
+        canvas.toBlob(function (blob) {
+          /* 与单图转换一致的严格校验:编码回退出的文件绝不写入 PDF */
+          if (!blob || (blob.type && blob.type !== 'image/jpeg')) { skipped++; next(); return; }
+          var fr = new FileReader();
+          fr.onload = function () {
+            pages.push({ data: new Uint8Array(fr.result), w: tw, h: th });
+            next();
+          };
+          fr.onerror = function () { skipped++; next(); };
+          fr.readAsArrayBuffer(blob);
+        }, 'image/jpeg', 0.92);
+      } catch (e) { skipped++; next(); }
+    });
+  })();
+}
+
 /* ============ 对比预览 ============ */
 function openCompare(id) {
   var it = null;
@@ -472,6 +615,9 @@ function render() {
   /* P1:转换中禁用"全部转换"并显示状态,防重复启动 */
   $('btnConvertAll').disabled = !hasItems || converting;
   $('btnConvertAll').textContent = converting ? '转换中…' : '⚡ 全部转换';
+  $('btnPdf').hidden = false;
+  $('btnPdf').disabled = !hasItems || converting || pdfBusy;
+  if (!pdfBusy) $('btnPdf').textContent = '📄 合并为 PDF';
   $('btnZip').disabled = !hasDone;
   $('btnClear').disabled = !hasItems;
   $('btnCancelVideo').hidden = true; /* 取消按钮只属于视频模式 */
@@ -626,6 +772,9 @@ function bindUI() {
   }
   $('btnZip').addEventListener('click', function () {
     if (mode === 'video') downloadAllZipVideos(); else downloadAllZip();
+  });
+  $('btnPdf').addEventListener('click', function () {
+    if (mode === 'image') makePdf();
   });
   $('btnClear').addEventListener('click', function () {
     if (mode === 'video') {
@@ -1525,6 +1674,7 @@ function renderVideos() {
   /* P1:转换中禁用"全部转换"并显示状态,防重复启动;转换中显示"取消转换" */
   $('btnConvertAll').disabled = !hasItems || converting;
   $('btnConvertAll').textContent = converting ? '转换中…' : '⚡ 全部转换';
+  $('btnPdf').hidden = true; /* 合并 PDF 只属于图片模式 */
   $('btnZip').disabled = !hasDone;
   $('btnClear').disabled = !hasItems;
   $('btnCancelVideo').hidden = !converting;
@@ -1713,6 +1863,8 @@ if (typeof module !== 'undefined' && module.exports) {
     compressionText: compressionText,
     escapeHtml: escapeHtml,
     encodeBMPBuffer: encodeBMPBuffer,
+    pdfPageLayout: pdfPageLayout,
+    buildPdfBlob: buildPdfBlob,
     MIME_OF: MIME_OF,
     EXT_OF: EXT_OF,
     LOSSY: LOSSY,
