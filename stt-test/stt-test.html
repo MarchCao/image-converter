@@ -45,6 +45,7 @@
       <option value="B">B 镜像模型</option>
       <option value="C">C 国内镜像（库+模型全镜像）</option>
       <option value="D">D 镜像+WebGPU 加速</option>
+      <option value="E">E 镜像+tiny 小模型（低内存）</option>
     </select>
     <button id="btnFile">转写所选文件（前 60 秒）</button>
   </p>
@@ -275,6 +276,7 @@ document.getElementById('btnFile').onclick = async () => {
   log('==== 所选文件转写开始 (' + (sliced.length / 16000).toFixed(1) + 's, 通道=' + ch + ') ====');
   try {
     if (ch === 'D') await transcribe(sliced, 'C', '所选文件', 'webgpu');
+    else if (ch === 'E') await transcribe(sliced, 'C', '所选文件', 'wasm', 'onnx-community/whisper-tiny');
     else await transcribe(sliced, ch, '所选文件', 'wasm');
     log('==== 所选文件转写 成功 ====');
   }
