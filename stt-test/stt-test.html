@@ -85,16 +85,48 @@ for (const f of files) {
 }
 log('解码检查完成。第一步:点 ① 做模型实测(首次约 81MB,请保持页面在前台)。');
 
+// ---- 连通性探针:测这台设备能连上哪些源 ----
+const PROBES = [
+  ['运行库 jsdelivr', 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/package.json'],
+  ['运行库 esm.run', 'https://esm.run/@huggingface/transformers@4.3.1'],
+  ['模型官方 huggingface.co', 'https://huggingface.co/onnx-community/whisper-base/resolve/main/config.json'],
+  ['模型镜像 hf-mirror.com', 'https://hf-mirror.com/onnx-community/whisper-base/resolve/main/config.json'],
+  ['npmmirror', 'https://registry.npmmirror.com/@huggingface/transformers/4.3.1/files/package.json'],
+];
+log('开始连通性探针…');
+await Promise.all(PROBES.map(async ([name, url]) => {
+  const t = performance.now();
+  const ctl = new AbortController();
+  const to = setTimeout(() => ctl.abort(), 12000);
+  try {
+    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+    if (r.body) { const rd = r.body.getReader(); await rd.read(); rd.cancel().catch(() => {}); }
+    clearTimeout(to);
+    log('探针 ' + name + ': ' + (r.ok ? '可达' : 'HTTP ' + r.status) + ' ' + Math.round(performance.now() - t) + 'ms');
+  } catch (e) {
+    clearTimeout(to);
+    log('探针 ' + name + ': 不可达 (' + (e.name === 'AbortError' ? '超时12s' : e.message) + ')');
+  }
+}));
+log('探针完成。若某个源不可达,就避开用它的通道。');
+
 // ---- 通道定义:A 海外CDN+官方模型 / B 海外CDN+镜像模型 / C 国内镜像(库+模型) ----
 const CHANNELS = {
   A: { lib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/+esm', host: 'https://huggingface.co', wasm: null, name: 'A官方' },
   B: { lib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/+esm', host: 'https://hf-mirror.com', wasm: null, name: 'B镜像模型' },
-  C: { lib: 'https://registry.npmmirror.com/@huggingface/transformers/4.3.1/files/dist/transformers.web.min.js', host: 'https://hf-mirror.com', wasm: 'https://registry.npmmirror.com/onnxruntime-web/1.31.0-dev.20260914-8d85527a0/files/dist/', name: 'C国内镜像' },
+  C: { lib: 'https://esm.run/@huggingface/transformers@4.3.1', host: 'https://hf-mirror.com', wasm: null, name: 'C国内镜像' },
 };
 
 function makeWorkerSrc(ch) {
   return `
-import { pipeline, env } from '${ch.lib}';
+let pipeline, env;
+try {
+  const mod = await import('${ch.lib}');
+  pipeline = mod.pipeline; env = mod.env;
+} catch (e) {
+  self.postMessage({ type: 'error', message: '运行库加载失败(' + '${ch.lib}' + '): ' + String((e && e.message) || e) });
+  throw e;
+}
 env.allowLocalModels = false;
 ${ch.wasm ? `env.backends.onnx.wasm.wasmPaths = '${ch.wasm}';` : ''}
 let asr = null;
