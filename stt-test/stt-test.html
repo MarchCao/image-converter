@@ -28,6 +28,7 @@
     <button id="btnHf">① 官方源实测（huggingface.co）</button>
     <button id="btnMirror">② 镜像源实测（hf-mirror.com）</button>
     <button id="btnLocal">③ 国内镜像通道实测（库+模型全镜像）</button>
+    <button id="btnGpu">④ WebGPU 通道实测（镜像模型）</button>
   </p>
 </div>
 
@@ -42,6 +43,7 @@
       <option value="A">A 官方（海外CDN+官方模型）</option>
       <option value="B">B 镜像模型</option>
       <option value="C">C 国内镜像（库+模型全镜像）</option>
+      <option value="D">D 镜像+WebGPU 加速</option>
     </select>
     <button id="btnFile">转写所选文件（前 60 秒）</button>
   </p>
@@ -148,13 +150,14 @@ const ready = (async () => {
 })();
 ready.catch((e) => { self.postMessage({ type: 'error', message: '运行库加载失败: ' + String((e && e.message) || e) }); });
 self.onmessage = async (e) => {
-  const { audio, host } = e.data;
+  const { audio, host, device } = e.data;
   try {
     await ready;
     env.remoteHost = host;
     if (!asr) {
+      if ((device || 'wasm') === 'wasm') { try { env.backends.onnx.wasm.numThreads = 1; } catch (_) {} }
       asr = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
-        dtype: 'q8', device: 'wasm',
+        dtype: 'q8', device: device || 'wasm',
         progress_callback: (p) => {
           if (p.status === 'progress' && p.file) self.postMessage({ type: 'dl', file: p.file, pct: Math.round(p.progress || 0) });
           else if (p.status === 'ready') self.postMessage({ type: 'ready' });
@@ -171,7 +174,7 @@ self.onmessage = async (e) => {
 `;
 }
 
-async function driveWorker(worker, pcm, host, label) {
+async function driveWorker(worker, pcm, host, label, device) {
   const lastPct = {};
   try {
     await new Promise((resolve, reject) => {
@@ -200,20 +203,20 @@ async function driveWorker(worker, pcm, host, label) {
         else if (m.type === 'error') { cleanup(); reject(new Error(m.message)); }
       };
       worker.onerror = (e) => { cleanup(); reject(new Error('Worker错误: ' + (e.message || '未知'))); };
-      worker.postMessage({ audio: pcm, host }, [pcm.buffer.slice(0)]);
+      worker.postMessage({ audio: pcm, host, device: device || 'wasm' }, [pcm.buffer.slice(0)]);
     });
   } finally { worker.terminate(); }
 }
 
 function setBtns(disabled) {
-  ['btnHf', 'btnMirror', 'btnLocal', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
+  ['btnHf', 'btnMirror', 'btnLocal', 'btnGpu', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
 }
 
-async function transcribe(pcm, chKey, label) {
+async function transcribe(pcm, chKey, label, device) {
   const ch = CHANNELS[chKey];
   const blob = new Blob([makeWorkerSrc(ch)], { type: 'text/javascript' });
   const worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
-  await driveWorker(worker, pcm, ch.host, label);
+  await driveWorker(worker, pcm, ch.host, label, device);
 }
 
 async function getSamplePCM() {
@@ -224,13 +227,13 @@ async function getSamplePCM() {
   return audio.getChannelData(0);
 }
 
-async function runSampleTest(label, chKey) {
+async function runSampleTest(label, chKey, device) {
   setBtns(true);
-  log('==== ' + label + ' 开始 (通道=' + CHANNELS[chKey].name + ') ====');
+  log('==== ' + label + ' 开始 (通道=' + CHANNELS[chKey].name + ', 设备=' + (device || 'wasm') + ') ====');
   try {
     const pcm = await getSamplePCM();
     log('样本已解码: ' + (pcm.length / 16000).toFixed(1) + 's PCM');
-    await transcribe(pcm, chKey, '内置样本');
+    await transcribe(pcm, chKey, '内置样本', device);
     log('==== ' + label + ' 成功 ====');
   } catch (err) { log('==== ' + label + ' 失败: ' + err.message + ' ====' ); }
   setBtns(false);
@@ -239,6 +242,7 @@ async function runSampleTest(label, chKey) {
 document.getElementById('btnHf').onclick = () => runSampleTest('官方源实测', 'A');
 document.getElementById('btnMirror').onclick = () => runSampleTest('镜像源实测', 'B');
 document.getElementById('btnLocal').onclick = () => runSampleTest('国内镜像通道实测', 'C');
+document.getElementById('btnGpu').onclick = () => runSampleTest('WebGPU通道实测', 'C', 'webgpu');
 
 // ---- 用户自选文件:解码 + 转写 ----
 const fileInput = document.getElementById('fileInput');
@@ -268,7 +272,8 @@ document.getElementById('btnFile').onclick = async () => {
   setBtns(true);
   log('==== 所选文件转写开始 (' + (sliced.length / 16000).toFixed(1) + 's, 通道=' + ch + ') ====');
   try {
-    await transcribe(sliced, ch, '所选文件');
+    if (ch === 'D') await transcribe(sliced, 'C', '所选文件', 'webgpu');
+    else await transcribe(sliced, ch, '所选文件', 'wasm');
     log('==== 所选文件转写 成功 ====');
   }
   catch (err) { log('==== 所选文件转写 失败: ' + err.message + ' ===='); }
