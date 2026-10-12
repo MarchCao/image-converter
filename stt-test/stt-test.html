@@ -159,10 +159,16 @@ async function driveWorker(worker, pcm, host, label) {
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => { clearInterval(watchdog); reject(new Error('超时 8 分钟')); }, 8 * 60 * 1000);
       let lastMsg = Date.now();
+      let lastWarn = 0;
+      let gotReady = false;
       const watchdog = setInterval(() => {
-        if (Date.now() - lastMsg > 25000) {
-          log('仍在等待运行库/模型响应(已 ' + Math.round((Date.now() - lastMsg) / 1000) + ' 秒无新进度)。若超过 2 分钟仍无下载进度,多半是当前网络连不上这个源,请换另一个源按钮重试,并把本行截图发回。');
-          lastMsg = Date.now();
+        const silentMs = Date.now() - lastMsg;
+        if (!gotReady && silentMs > 150000) {
+          cleanup();
+          reject(new Error('模型下载阶段 150 秒无任何进度,判定当前通道的模型源不可达,请换通道重试'));
+        } else if (silentMs > 25000 && Date.now() - lastWarn > 30000) {
+          lastWarn = Date.now();
+          log('仍在等待运行库/模型响应(已 ' + Math.round(silentMs / 1000) + ' 秒无新进度)。若长时间无下载进度,多半是当前网络连不上这个源,请换另一个源按钮重试,并把本行截图发回。');
         }
       }, 10000);
       const cleanup = () => { clearTimeout(timer); clearInterval(watchdog); };
@@ -171,7 +177,7 @@ async function driveWorker(worker, pcm, host, label) {
         const m = e.data;
         if (m.type === 'dl') {
           if (m.pct !== lastPct[m.file] && (m.pct % 25 === 0 || m.pct === 100)) { lastPct[m.file] = m.pct; log('下载 ' + m.file.split('/').pop() + ': ' + m.pct + '%'); }
-        } else if (m.type === 'ready') { log('模型就绪,开始转写…'); }
+        } else if (m.type === 'ready') { gotReady = true; log('模型就绪,开始转写…'); }
         else if (m.type === 'done') { cleanup(); log(label + ' 转写完成,用时 ' + m.secs.toFixed(1) + 's'); log('结果: ' + m.text.trim()); resolve(); }
         else if (m.type === 'error') { cleanup(); reject(new Error(m.message)); }
       };
