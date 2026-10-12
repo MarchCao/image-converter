@@ -27,6 +27,7 @@
   <p>
     <button id="btnHf">① 官方源实测（huggingface.co）</button>
     <button id="btnMirror">② 镜像源实测（hf-mirror.com）</button>
+    <button id="btnLocal">③ 国内镜像通道实测（库+模型全镜像）</button>
   </p>
 </div>
 
@@ -36,10 +37,11 @@
   <p class="note">操作顺序：① 点下面「选择文件」选录音 → ② 等黑框出现「文件解码 OK」→ ③ 点蓝色按钮转写。</p>
   <p><input type="file" id="fileInput" accept="audio/*,.m4a,.mp3,.wav"></p>
   <p>
-    模型源：
+    通道：
     <select id="hostSel">
-      <option value="https://huggingface.co">官方源</option>
-      <option value="https://hf-mirror.com">镜像源</option>
+      <option value="A">A 官方（海外CDN+官方模型）</option>
+      <option value="B">B 镜像模型</option>
+      <option value="C">C 国内镜像（库+模型全镜像）</option>
     </select>
     <button id="btnFile">转写所选文件（前 60 秒）</button>
   </p>
@@ -83,10 +85,18 @@ for (const f of files) {
 }
 log('解码检查完成。第一步:点 ① 做模型实测(首次约 81MB,请保持页面在前台)。');
 
-// ---- Worker(模型加载+转写) ----
-const WORKER_SRC = `
-import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/+esm';
+// ---- 通道定义:A 海外CDN+官方模型 / B 海外CDN+镜像模型 / C 国内镜像(库+模型) ----
+const CHANNELS = {
+  A: { lib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/+esm', host: 'https://huggingface.co', wasm: null, name: 'A官方' },
+  B: { lib: 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/+esm', host: 'https://hf-mirror.com', wasm: null, name: 'B镜像模型' },
+  C: { lib: 'https://registry.npmmirror.com/@huggingface/transformers/4.3.1/files/dist/transformers.web.min.js', host: 'https://hf-mirror.com', wasm: 'https://registry.npmmirror.com/onnxruntime-web/1.31.0-dev.20260914-8d85527a0/files/dist/', name: 'C国内镜像' },
+};
+
+function makeWorkerSrc(ch) {
+  return `
+import { pipeline, env } from '${ch.lib}';
 env.allowLocalModels = false;
+${ch.wasm ? `env.backends.onnx.wasm.wasmPaths = '${ch.wasm}';` : ''}
 let asr = null;
 self.onmessage = async (e) => {
   const { audio, host } = e.data;
@@ -109,10 +119,9 @@ self.onmessage = async (e) => {
   }
 };
 `;
+}
 
-async function transcribe(pcm, host, label) {
-  const blob = new Blob([WORKER_SRC], { type: 'text/javascript' });
-  const worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
+async function driveWorker(worker, pcm, host, label) {
   const lastPct = {};
   try {
     await new Promise((resolve, reject) => {
@@ -141,7 +150,14 @@ async function transcribe(pcm, host, label) {
 }
 
 function setBtns(disabled) {
-  ['btnHf', 'btnMirror', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
+  ['btnHf', 'btnMirror', 'btnLocal', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
+}
+
+async function transcribe(pcm, chKey, label) {
+  const ch = CHANNELS[chKey];
+  const blob = new Blob([makeWorkerSrc(ch)], { type: 'text/javascript' });
+  const worker = new Worker(URL.createObjectURL(blob), { type: 'module' });
+  await driveWorker(worker, pcm, ch.host, label);
 }
 
 async function getSamplePCM() {
@@ -152,20 +168,21 @@ async function getSamplePCM() {
   return audio.getChannelData(0);
 }
 
-async function runSampleTest(label, host) {
+async function runSampleTest(label, chKey) {
   setBtns(true);
-  log('==== ' + label + ' 开始 (host=' + host + ') ====');
+  log('==== ' + label + ' 开始 (通道=' + CHANNELS[chKey].name + ') ====');
   try {
     const pcm = await getSamplePCM();
     log('样本已解码: ' + (pcm.length / 16000).toFixed(1) + 's PCM');
-    await transcribe(pcm, host, '内置样本');
+    await transcribe(pcm, chKey, '内置样本');
     log('==== ' + label + ' 成功 ====');
   } catch (err) { log('==== ' + label + ' 失败: ' + err.message + ' ====' ); }
   setBtns(false);
 }
 
-document.getElementById('btnHf').onclick = () => runSampleTest('官方源实测', 'https://huggingface.co');
-document.getElementById('btnMirror').onclick = () => runSampleTest('镜像源实测', 'https://hf-mirror.com');
+document.getElementById('btnHf').onclick = () => runSampleTest('官方源实测', 'A');
+document.getElementById('btnMirror').onclick = () => runSampleTest('镜像源实测', 'B');
+document.getElementById('btnLocal').onclick = () => runSampleTest('国内镜像通道实测', 'C');
 
 // ---- 用户自选文件:解码 + 转写 ----
 const fileInput = document.getElementById('fileInput');
@@ -190,11 +207,14 @@ fileInput.addEventListener('change', async () => {
 document.getElementById('btnFile').onclick = async () => {
   const pcm = window.__filePcm;
   if (!pcm) { log('提示: 还没有可转写的文件。请先在第二步选一个录音文件,等黑框出现「文件解码 OK」再点这个按钮。'); return; }
-  const host = document.getElementById('hostSel').value;
+  const ch = document.getElementById('hostSel').value;
   const sliced = pcm.length > 16000 * 60 ? pcm.slice(0, 16000 * 60) : pcm;
   setBtns(true);
-  log('==== 所选文件转写开始 (' + (sliced.length / 16000).toFixed(1) + 's, host=' + host + ') ====');
-  try { await transcribe(sliced, host, '所选文件'); log('==== 所选文件转写 成功 ===='); }
+  log('==== 所选文件转写开始 (' + (sliced.length / 16000).toFixed(1) + 's, 通道=' + ch + ') ====');
+  try {
+    await transcribe(sliced, ch, '所选文件');
+    log('==== 所选文件转写 成功 ====');
+  }
   catch (err) { log('==== 所选文件转写 失败: ' + err.message + ' ===='); }
   setBtns(false);
 };
