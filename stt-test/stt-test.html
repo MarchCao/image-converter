@@ -6,8 +6,9 @@
 <title>录音转文字 · 浏览器端完整实测</title>
 <style>
   body { font-family: -apple-system, sans-serif; margin: 16px; line-height: 1.5; }
-  button { font-size: 17px; padding: 12px 18px; margin: 6px 6px 6px 0; border-radius: 10px; border: 1px solid #888; background: #f2f2f2; }
+  button { font-size: 17px; padding: 12px 18px; margin: 6px 6px 6px 0; border-radius: 10px; border: none; background: #1677ff; color: #fff; font-weight: 600; -webkit-appearance: none; appearance: none; }
   button:disabled { opacity: .45; }
+  input[type=file] { font-size: 17px; padding: 10px 0; }
   pre { white-space: pre-wrap; word-break: break-all; background: #111; color: #0f0; padding: 12px; border-radius: 8px; font-size: 13px; min-height: 200px; }
   .note { color: #555; font-size: 14px; }
   .card { border: 1px solid #ddd; border-radius: 10px; padding: 12px; margin: 14px 0; }
@@ -30,6 +31,7 @@
 <div class="card">
   <b>第二步：测你自己的录音文件</b>
   <p class="note">选一个语音备忘录导出的 .m4a（建议 5 分钟以内），先测解码，再可转写前 60 秒。文件只在本机处理，不上传。</p>
+  <p class="note">操作顺序：① 点下面「选择文件」选录音 → ② 等黑框出现「文件解码 OK」→ ③ 点蓝色按钮转写。</p>
   <p><input type="file" id="fileInput" accept="audio/*,.m4a,.mp3,.wav"></p>
   <p>
     模型源：
@@ -37,7 +39,7 @@
       <option value="https://huggingface.co">官方源</option>
       <option value="https://hf-mirror.com">镜像源</option>
     </select>
-    <button id="btnFile" disabled>转写所选文件（前 60 秒）</button>
+    <button id="btnFile">转写所选文件（前 60 秒）</button>
   </p>
 </div>
 
@@ -124,7 +126,7 @@ async function transcribe(pcm, host, label) {
 }
 
 function setBtns(disabled) {
-  ['btnHf', 'btnMirror', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled || (id === 'btnFile' && !window.__filePcm); });
+  ['btnHf', 'btnMirror', 'btnFile'].forEach(id => { const b = document.getElementById(id); if (b) b.disabled = disabled; });
 }
 
 async function getSamplePCM() {
@@ -155,17 +157,16 @@ const fileInput = document.getElementById('fileInput');
 fileInput.addEventListener('change', async () => {
   const file = fileInput.files && fileInput.files[0];
   window.__filePcm = null;
-  document.getElementById('btnFile').disabled = true;
   if (!file) return;
   log('---- 已选文件: ' + file.name + ' 大小=' + (file.size / 1024).toFixed(0) + 'KB 类型=' + (file.type || '未知'));
+  log('正在解码所选文件…');
   try {
     const buf = await file.arrayBuffer();
     const ctx = new OfflineAudioContext(1, 1, 16000);
     const audio = await ctx.decodeAudioData(buf);
     log('文件解码 OK: 时长=' + audio.duration.toFixed(1) + 's 原采样率=' + audio.sampleRate + ' 声道=' + audio.numberOfChannels);
     window.__filePcm = audio.getChannelData(0);
-    document.getElementById('btnFile').disabled = false;
-    log('可以点「转写所选文件」测试(超过 60 秒只转前 60 秒)。');
+    log('现在可以点蓝色按钮「转写所选文件」了(超过 60 秒只转前 60 秒)。');
   } catch (e) {
     log('文件解码 FAIL: ' + e.name + ' ' + e.message + ' ← 这一行请务必截图发回');
   }
@@ -173,7 +174,7 @@ fileInput.addEventListener('change', async () => {
 
 document.getElementById('btnFile').onclick = async () => {
   const pcm = window.__filePcm;
-  if (!pcm) return;
+  if (!pcm) { log('提示: 还没有可转写的文件。请先在第二步选一个录音文件,等黑框出现「文件解码 OK」再点这个按钮。'); return; }
   const host = document.getElementById('hostSel').value;
   const sliced = pcm.length > 16000 * 60 ? pcm.slice(0, 16000 * 60) : pcm;
   setBtns(true);
