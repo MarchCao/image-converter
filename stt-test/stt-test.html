@@ -72,20 +72,7 @@ log('硬件并发: ' + (navigator.hardwareConcurrency || '未知') + ' / 设备�
 <script type="module">
 const log = window.__log;
 
-// ---- 内置样本解码检查 ----
-const files = ['zh.wav', 'zh.mp3', 'zh-synthetic.m4a'];
-for (const f of files) {
-  try {
-    const resp = await fetch('audio/' + f);
-    const buf = await resp.arrayBuffer();
-    const ctx = new OfflineAudioContext(1, 1, 16000);
-    const audio = await ctx.decodeAudioData(buf);
-    log('DECODE OK  ' + f + ': 时长=' + audio.duration.toFixed(2) + 's');
-  } catch (e) { log('DECODE FAIL ' + f + ': ' + e.name + ' ' + e.message); }
-}
-log('解码检查完成。第一步:点 ① 做模型实测(首次约 81MB,请保持页面在前台)。');
-
-// ---- 连通性探针:测这台设备能连上哪些源 ----
+// ---- 内置样本解码检查 + 连通性探针(异步初始化,兼容旧浏览器:不用顶层 await) ----
 const PROBES = [
   ['运行库 jsdelivr', 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1/package.json'],
   ['运行库 esm.run', 'https://esm.run/@huggingface/transformers@4.3.1'],
@@ -93,22 +80,37 @@ const PROBES = [
   ['模型镜像 hf-mirror.com', 'https://hf-mirror.com/onnx-community/whisper-base/resolve/main/config.json'],
   ['npmmirror', 'https://registry.npmmirror.com/@huggingface/transformers/4.3.1/files/package.json'],
 ];
-log('开始连通性探针…');
-await Promise.all(PROBES.map(async ([name, url]) => {
-  const t = performance.now();
-  const ctl = new AbortController();
-  const to = setTimeout(() => ctl.abort(), 12000);
-  try {
-    const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
-    if (r.body) { const rd = r.body.getReader(); await rd.read(); rd.cancel().catch(() => {}); }
-    clearTimeout(to);
-    log('探针 ' + name + ': ' + (r.ok ? '可达' : 'HTTP ' + r.status) + ' ' + Math.round(performance.now() - t) + 'ms');
-  } catch (e) {
-    clearTimeout(to);
-    log('探针 ' + name + ': 不可达 (' + (e.name === 'AbortError' ? '超时12s' : e.message) + ')');
+async function init() {
+  const files = ['zh.wav', 'zh.mp3', 'zh-synthetic.m4a'];
+  for (const f of files) {
+    try {
+      const resp = await fetch('audio/' + f);
+      const buf = await resp.arrayBuffer();
+      const ctx = new OfflineAudioContext(1, 1, 16000);
+      const audio = await ctx.decodeAudioData(buf);
+      log('DECODE OK  ' + f + ': 时长=' + audio.duration.toFixed(2) + 's');
+    } catch (e) { log('DECODE FAIL ' + f + ': ' + e.name + ' ' + e.message); }
   }
-}));
-log('探针完成。若某个源不可达,就避开用它的通道。');
+  log('解码检查完成。第一步:点 ① 做模型实测(首次约 81MB,请保持页面在前台)。');
+  log('开始连通性探针…');
+  await Promise.all(PROBES.map(async ([name, url]) => {
+    const t = performance.now();
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 12000);
+    try {
+      const r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+      if (r.body) { const rd = r.body.getReader(); await rd.read(); rd.cancel().catch(() => {}); }
+      clearTimeout(to);
+      log('探针 ' + name + ': ' + (r.ok ? '可达' : 'HTTP ' + r.status) + ' ' + Math.round(performance.now() - t) + 'ms');
+    } catch (e) {
+      clearTimeout(to);
+      log('探针 ' + name + ': 不可达 (' + (e.name === 'AbortError' ? '超时12s' : e.message) + ')');
+    }
+  }));
+  log('探针完成。若某个源不可达,就避开用它的通道。');
+  log('就绪。');
+}
+init().catch((e) => log('初始化异常: ' + String((e && e.message) || e)));
 
 // ---- 通道定义:A 海外CDN+官方模型 / B 海外CDN+镜像模型 / C 国内镜像(库+模型) ----
 const CHANNELS = {
@@ -119,20 +121,18 @@ const CHANNELS = {
 
 function makeWorkerSrc(ch) {
   return `
-let pipeline, env;
-try {
+let pipeline, env, asr = null;
+const ready = (async () => {
   const mod = await import('${ch.lib}');
   pipeline = mod.pipeline; env = mod.env;
-} catch (e) {
-  self.postMessage({ type: 'error', message: '运行库加载失败(' + '${ch.lib}' + '): ' + String((e && e.message) || e) });
-  throw e;
-}
-env.allowLocalModels = false;
-${ch.wasm ? `env.backends.onnx.wasm.wasmPaths = '${ch.wasm}';` : ''}
-let asr = null;
+  env.allowLocalModels = false;
+  ${ch.wasm ? `env.backends.onnx.wasm.wasmPaths = '${ch.wasm}';` : ''}
+})();
+ready.catch((e) => { self.postMessage({ type: 'error', message: '运行库加载失败: ' + String((e && e.message) || e) }); });
 self.onmessage = async (e) => {
   const { audio, host } = e.data;
   try {
+    await ready;
     env.remoteHost = host;
     if (!asr) {
       asr = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
@@ -256,8 +256,6 @@ document.getElementById('btnFile').onclick = async () => {
   catch (err) { log('==== 所选文件转写 失败: ' + err.message + ' ===='); }
   setBtns(false);
 };
-
-log('就绪。');
 </script>
 </body>
 </html>
