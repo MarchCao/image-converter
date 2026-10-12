@@ -1,7 +1,9 @@
 // 页面编排:状态管理、步骤门控、事件接线。所有数据仅存于内存会话,不写任何持久化存储。
 import { loadPdf, renderThumb, extractLargestImage, sampleMainColor } from './pdf-import.js';
 import { parseTranslation, matchInfo } from './parse.js';
-import { buildPptx, LANGS } from './pptx-build.js';
+import { buildPdf } from './pdf-build.js';
+
+const LANG_LABEL = { zh: '中文', ja: '日本語', en: 'English' };
 
 const $ = id => document.getElementById(id);
 const statusEl = $('status');
@@ -191,38 +193,67 @@ $('btnGenerate').addEventListener('click', async () => {
     setStatus('有页面译文为空，请先补全或删除该页内容再生成。');
     return;
   }
-  setStatus('正在生成 PPTX…');
+  setStatus('正在逐页排版生成…');
   $('btnGenerate').disabled = true;
+  $('outPreview').innerHTML = '';
   try {
-    const pdfRatio = state.pdf.pages[0].w / state.pdf.pages[0].h;
+    const page0 = state.pdf.pages[0];
     const imgs = segments.map((_, i) => state.images[i] || null);
-    const { warnings, slideCount, fileName } = await buildPptx({
+    const res = await buildPdf({
       segments,
       images: imgs,
       lang: $('langSel').value,
-      sizeMode: $('sizeSel').value === 'pdf' ? 'pdf' : 'wide',
-      pdfRatio,
       mainColor: $('colorInput').value,
+      pageW: page0.w,
+      pageH: page0.h,
       fileBase: state.fileBase,
+      onProgress: (i, n) => setStatus(`正在排版第 ${i}/${n} 页…`),
+      onThumb: (canvas) => {
+        const t = document.createElement('canvas');
+        const tw = 190;
+        t.width = tw;
+        t.height = Math.round(tw * canvas.height / canvas.width);
+        t.getContext('2d').drawImage(canvas, 0, 0, t.width, t.height);
+        t.className = 'out-thumb';
+        $('outPreview').appendChild(t);
+      },
     });
-    setStatus('生成完成，已开始下载。');
+    state.outBlob = res.blob;
+    state.outName = res.fileName;
+    downloadBlob(res.blob, res.fileName);
+    setStatus('生成完成，已开始下载。请对照下方预览逐页检查。');
     $('genResult').innerHTML =
-      `<span class="ok">✓ 已生成 ${fileName}（共 ${slideCount} 页，${LANGS[$('langSel').value].label}）。</span>\n文字为可编辑文本框，请在 PowerPoint 中打开检查排版。`;
+      `<span class="ok">✓ 已生成 ${res.fileName}（共 ${res.outPages} 页，${LANG_LABEL[$('langSel').value]}，${(res.blob.size / 1024 / 1024).toFixed(2)} MB）。</span>\n下方预览就是 PDF 的实际样子，所见即所得；定稿版文字不可复制/编辑。`;
     const ul = $('warnList');
     ul.innerHTML = '';
-    warnings.forEach(w => { const li = document.createElement('li'); li.textContent = w; ul.appendChild(li); });
-    if (!warnings.length) {
+    if (res.notes.length) {
+      res.notes.forEach(w => { const li = document.createElement('li'); li.textContent = w; ul.appendChild(li); });
+    } else {
       const li = document.createElement('li');
-      li.textContent = '排版检查：未发现明显溢出风险（估算值，仍建议逐页目视确认）。';
+      li.textContent = '排版：全部页面在原字号内排下，无缩字号、无续页。';
       li.style.color = 'var(--ok)';
       ul.appendChild(li);
     }
+    $('btnRedownload').hidden = false;
     $('imgNote').hidden = !imgs.some(x => x && x.dataUrl);
   } catch (e) {
     setStatus('生成失败');
-    $('genResult').innerHTML = '<span class="bad">PPTX 生成失败：' + (e.message === 'LIB_MISSING' ? '组件加载失败，请刷新页面重试。' : e.message) + '</span>';
+    $('genResult').innerHTML = '<span class="bad">生成失败：' + e.message + '</span>';
   }
   gate();
+});
+
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000);
+}
+
+$('btnRedownload').addEventListener('click', () => {
+  if (state.outBlob) downloadBlob(state.outBlob, state.outName);
 });
 
 $('btnClear').addEventListener('click', () => {

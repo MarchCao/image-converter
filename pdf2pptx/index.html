@@ -3,21 +3,21 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PDF 翻译稿转 PPTX · shift.haice.top</title>
-<meta name="description" content="在浏览器本地把已翻译好的文稿按原 PDF 风格排版成可编辑 PPTX：上传 PDF、粘贴译文、按页生成。不上传服务器，无广告，不收费。">
+<title>PDF 翻译稿 · 生成定稿 PDF · shift.haice.top</title>
+<meta name="description" content="在浏览器本地把已翻译好的文稿按原 PDF 风格排版成定稿 PDF：上传 PDF、粘贴译文、按页生成，版式锁定，所见即所得。不上传服务器，无广告，不收费。">
 <link rel="stylesheet" href="styles.css?v=1">
 </head>
 <body>
 <header class="top">
   <a class="back" href="/">← 返回格式转换</a>
-  <h1>📊 PDF 翻译稿转 PPTX</h1>
-  <p class="tagline">上传原 PDF + 粘贴译文 → 按页生成可编辑的 PowerPoint</p>
+  <h1>📄 PDF 翻译稿 · 定稿 PDF</h1>
+  <p class="tagline">上传原 PDF + 粘贴译文 → 生成版式锁定的定稿 PDF（所见即所得）</p>
 </header>
 <div id="status" class="status">请选择 PDF 文件开始。</div>
 
 <main class="container">
   <div class="tip privacy">
-    🔒 PDF 解析与 PPTX 生成尽可能在您的设备本地完成。本工具不会将您的 PDF 或译文上传到本网站服务器。处理结果默认仅保留在当前页面会话中。
+    🔒 PDF 解析与定稿生成尽可能在您的设备本地完成。本工具不会将您的 PDF 或译文上传到本网站服务器。处理结果默认仅保留在当前页面会话中。
   </div>
 
   <section class="card">
@@ -71,23 +71,21 @@
           <option value="en">English</option>
         </select>
       </label>
-      <label>页面尺寸
-        <select id="sizeSel">
-          <option value="wide" selected>16:9 宽屏</option>
-          <option value="pdf">沿用原 PDF 比例</option>
-        </select>
-      </label>
       <label>主色 <input type="color" id="colorInput" value="#1F4E79"> <span id="colorNote" class="hint">未加载 PDF，暂用默认商务蓝</span></label>
     </div>
+    <div class="hint" style="margin-top:8px">输出页面尺寸与原 PDF 一致；语言决定字体，日文/中文/英文译文长度不同也没关系，生成时会自动调整字号与图片大小（见步骤 5 的排版报告）。</div>
   </section>
 
   <section class="card">
-    <h2>步骤 5 · 生成 PPTX</h2>
-    <button id="btnGenerate" class="btn primary" disabled>生成并下载 PPTX</button>
+    <h2>步骤 5 · 生成定稿 PDF</h2>
+    <button id="btnGenerate" class="btn primary" disabled>生成并下载 PDF</button>
+    <button id="btnRedownload" class="btn" hidden>重新下载</button>
     <div id="gateHint" class="hint">请先完成：上传 PDF → 粘贴并解析译文 → 页数一致（或已确认不一致）。</div>
     <div id="genResult" class="info"></div>
     <ul id="warnList" class="warnlist"></ul>
-    <div class="tip" id="imgNote" hidden>提示：从原 PDF 提取的图片若内部含有源语言文字，图片中的文字不会被翻译，请在 PowerPoint 中检查并按需替换图片。</div>
+    <div id="outPreview" class="thumbs"></div>
+    <div class="tip" id="imgNote" hidden>提示：从原 PDF 提取的图片若内部含有源语言文字，图片中的文字不会被翻译，请逐页检查预览。</div>
+    <div class="hint" style="margin-top:8px">定稿版 PDF 的文字不可复制/编辑，适合直接发送给客户确认；如需继续改稿，请回到步骤 3 修改译文后重新生成。</div>
   </section>
 
   <div class="row end">
@@ -96,7 +94,6 @@
   <p class="foot">全部处理在浏览器本地进行 · 无广告 · 不收费</p>
 </main>
 
-<script src="vendor/pptxgen.bundle.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>
